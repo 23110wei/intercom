@@ -101,11 +101,6 @@ extern const lv_img_dsc_t *ui_imgset_iconBat[]; // 电池图标数组
 uint8_t g_camera_from_page     = PAGE_HOME;   // 记录相机入口
 uint8_t g_img_from_page        = PAGE_HOME;   // 记录相册入口
 
-typedef enum {
-    WEICHAT_MSG_FROM_PEER = 0,
-    WEICHAT_MSG_FROM_ME   = 1,
-} wechat_msg_from_t;
-
 #define UI_KEY_EVENT(code, event)   (((code) << 8) | (event))
 #define UI_KEY_CALL_LONG_DOWN   UI_KEY_EVENT(KEY_CALL, KEY_EVENT_LDOWN)
 #define UI_KEY_CALL_LONG_UP     UI_KEY_EVENT(KEY_CALL, KEY_EVENT_LUP)
@@ -427,6 +422,7 @@ static void wechat_add_voice_message(wechat_msg_from_t from, uint8_t sec)
 }
 
 
+
 /* 点击语音气泡时的事件回调 */
 static void wechat_voice_bubble_event_cb(lv_event_t *e)
 {
@@ -439,7 +435,7 @@ static void wechat_voice_bubble_event_cb(lv_event_t *e)
            slot->msg_id, slot->sec, slot->wav_path);
 
     // TODO: 播放接口
-    // wechat_voice_play_from_wav(slot->wav_path);
+    wechat_voice_play_from_wav(slot->wav_path);
 }
 
 
@@ -1095,7 +1091,7 @@ void ui_event_wechatPage(lv_event_t *e)
                                        slot->msg_id, slot->sec, slot->wav_path);
                                 /* TODO: 真正播放接口 */
                                 // wechat_voice_play_by_msg_id(slot->msg_id);
-                                // wechat_voice_play_from_wav(slot->wav_path);
+                                wechat_voice_play_from_wav(slot->wav_path);
                             } else if (slot->type == WECHAT_MSG_TYPE_EMOJI) {
                                 printf("[wechat] selected emoji: id=%u from=%d\n",
                                        slot->emoji_id, slot->from);
@@ -1130,17 +1126,15 @@ void ui_event_wechatPage(lv_event_t *e)
 
         case UI_KEY_CALL_LONG_DOWN:
             /* 只有在“语音按钮”被选中的时候，才开始录音 */
-            if (s_wechat_focus_mode == WECHAT_FOCUS_BOTTOM &&
-                s_wechat_focus_idx == 1) {
+            if (s_wechat_focus_idx == 1) {
                 wechat_record_ui_start();
             }
             break;
 
         case UI_KEY_CALL_LONG_UP:
-            if (s_wechat_focus_mode == WECHAT_FOCUS_BOTTOM &&
-                s_wechat_focus_idx == 1) {
+            if (s_wechat_focus_idx == 1) {
                 wechat_record_ui_stop_and_commit();
-            }
+			}
             break;
 
         default:
