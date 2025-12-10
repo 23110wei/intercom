@@ -21,8 +21,9 @@
 #include "dev/audio/components/vad/auvad.h"
 #include "sonic_process.h"
 #include "magic_sound.h"
+#include "key2_wav_record.h"
 
-#define ADC_DEBUG  1
+#define ADC_DEBUG  0
 
 #if ADC_DEBUG
     #define ADC_LOG  printf
@@ -30,21 +31,9 @@
     #define ADC_LOG(...)
 #endif
 
-#define PCM_SAMPLE_LEN        160          // 每帧samples（8kHz 20ms）
-#define PCM_MAX_SEC           60
-#define PCM_FRAME_PER_SEC     50           // 20ms一帧
-#define PCM_MAX_FRAMES        (PCM_MAX_SEC * PCM_FRAME_PER_SEC) // 3000帧
-
-// 3000帧 × 160samples × 2bytes = 960KB 放PSRAM
-int16_t g_pcm_record_buf[PCM_MAX_FRAMES][PCM_SAMPLE_LEN] __attribute__ ((aligned(4),section(".psram.src")));
-
-volatile uint32_t g_pcm_wr_index = 0;
-volatile uint8_t  g_pcm_recording = 0;
-
-
 
 #define ADC_DIGITMUTE_ENABLE
-int adc_digitmute_flag=1;  // 数字静音开关（1=静音）
+int adc_digitmute_flag=0;  // 数字静音开关（1=静音）
 
 #define MEDIAN_FILTER        1
 #define MID(a,b,c)   ((a>=b)?((a<=c)?a:((b>=c)?b:c)):((a>=c)?a:((b>=c)?c:b)))
@@ -82,7 +71,6 @@ magicSound *magic_sound = NULL;
 #else
 #define SOFT_GAIN	(8)
 #endif
-extern uint8_t rec_open;
 static uint8_t g_vad_res = 1;
 static stream *global_audio_adc_s = NULL;
 struct audio_ad_config;
@@ -90,26 +78,7 @@ typedef void *(*set_buf)(void *priv_el,void *el_point);
 typedef void (*get_buf)(void *priv_el,void *el_point);
 
 typedef int32 (*audio_ad_read)(struct audio_ad_config *audio, void* buf, uint32 len);
-
-void pcm_record_start()
-{
-    g_pcm_wr_index = 0;
-    g_pcm_recording = 1;	
-	rec_open = 1 ;
-	printf("[wechat] start PCM record\n");
-}
-
-void pcm_record_stop()
-{
-    g_pcm_recording = 0;
-	rec_open = 0 ;
-	printf("[wechat] stop PCM record, frames=%u\n", g_pcm_wr_index);
-}
-
-uint32_t pcm_record_get_frames()
-{
-    return g_pcm_wr_index;
-}
+extern int16_t  g_pcm_record_buf[PCM_MAX_FRAMES][PCM_SAMPLE_LEN];
 
 //静音
 void audio_adc_mute(void)
@@ -385,6 +354,7 @@ static void audio_deal_task(void *arg)
 					p_buf++;
 				}
 				p_buf -= sample_len;
+				
 			/************** 在分发之前存储 PCM **************/
 			if (g_pcm_recording && g_pcm_wr_index < PCM_MAX_FRAMES) {
 				/* p_buf 是当前帧处理完毕后的 PCM 数据指针 */

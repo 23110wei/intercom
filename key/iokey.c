@@ -12,12 +12,14 @@ static void key_iokey_init(key_channel_t *key, uint8_t enable)
 	if(enable)
 	{
 		gpio_set_mode(iokey->pin, iokey->pull, iokey->pull_level);
+		gpio_set_dir(iokey->pin, GPIO_DIR_INPUT); 
 		os_printf("%s:%d - GPIO%d initialized\n", __FUNCTION__, __LINE__, iokey->pin);
 		key->enable = 1;
 	}
 	else
 	{
 		gpio_set_mode(iokey->pin,GPIO_PULL_NONE,0);
+		gpio_set_dir(iokey->pin, GPIO_DIR_INPUT);
 		os_printf("%s:%d - GPIO%d disabled\n", __FUNCTION__, __LINE__, iokey->pin);
 		key->enable = 0;
 	}

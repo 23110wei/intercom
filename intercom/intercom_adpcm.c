@@ -19,6 +19,15 @@
 #include "babyprotocol.h"
 #include "audio_app/key2_wav_record.h"
 
+#define INTERCOM_ENC_DEBUG  0
+
+#if INTERCOM_ENC_DEBUG
+#define INTERCOM_ENC_LOG(fmt, ...) \
+    os_printf("[INTERCOM_ENC] " fmt "\r\n", ##__VA_ARGS__)
+#else
+#define INTERCOM_ENC_LOG(fmt, ...)
+#endif
+
 #define PIN_SPK_MUTE   PA_7
 
 #define MUTE_SPEAKER    0
@@ -53,6 +62,13 @@
 #define NUM_OF_FRAME           1
 
 #define LOSE_STATISTICAL          1
+
+#define INTERCOM_ENC_MANUAL  BIT(0)
+#define INTERCOM_ENC_NET     BIT(1)
+#define INTERCOM_ENC_ON      (INTERCOM_ENC_MANUAL | INTERCOM_ENC_NET)
+
+
+
 
 TYPE_INTERCOM_STRUCT *intercom = NULL;
 audio_node audio_node_src[SOFTBUF_LEN/NODE_DATA_LEN] __attribute__ ((aligned(4),section(".psram.src")));
@@ -107,7 +123,7 @@ uint8 g_transfer_mode = SEND_MODE;
 uint8 g_switch_recv_success = 1;
 uint8 g_code_sema_init = 0;
 
-uint8_t g_video_intercom_mode = 0;  
+extern uint8_t g_video_intercom_mode ;  
 
 AdpcmEncoder *Enc_Inst = NULL;
 AdpcmDecoder *Dec_Inst = NULL;
@@ -129,12 +145,11 @@ void lose_packet_check(void);
 static struct os_timer ctl_timer;
 void decode_sem_up(uint32 *args);
 
+extern int16_t  g_pcm_record_buf[PCM_MAX_FRAMES][PCM_SAMPLE_LEN];
 extern int  key_wav_record_start(uint32_t frq, const char *prefix, uint32_t max_minute);
 extern void key_wav_record_stop(void);
-extern int wechat_save_pcm_to_wav(const char *prefix,
-                                  uint32_t frq,
-                                  const int16_t *pcm,
-                                  uint32_t sample_cnt);
+extern int wechat_save_record_buf_to_wav(const char *prefix, uint32_t frq);
+
 
 void intercom_init(void)
 {
@@ -235,6 +250,25 @@ static void free_room(void)
 	}
 
 }
+
+
+void intercom_wechat_ptt_switch(uint8 enable)
+{
+    if (enable) {
+        // WeChat 模式：强制允许编码（手动+网络两位都置 1）
+        intercom_encode_flag = INTERCOM_ENC_ON ;
+        send_start_flag = 0;          // 重新累计缓存再发
+        g_switch_recv_success = 0;    // 清一下接收状态（可选）
+    } else {
+        // 关闭编码：两位都清掉
+        intercom_encode_flag = 0x00 ;
+        send_start_flag = 0;
+    }
+
+    printf("[wechat] ptt switch=%d, KEY_AUDIO=0x%x\n",
+           enable, intercom_encode_flag);
+}
+
 uint32_t intercom_push_key(struct key_callback_list_s *callback_list,uint32_t keyvalue,uint32_t extern_value)
 {
 	if( (keyvalue>>8) != AD_PRESS)
@@ -249,120 +283,104 @@ uint32_t intercom_push_key(struct key_callback_list_s *callback_list,uint32_t ke
 	return 0;
 }
 
-extern void audio_adc_mute(void);
-extern void audio_adc_unmute(void);
+//extern void audio_adc_mute(void);
+//extern void audio_adc_unmute(void);
+//
+//extern uint8_t s_wechat_focus_idx;  
+//extern struct {
+//    uint8_t page_cur;
+//    uint8_t page_back;
+//    uint8_t pagebtn_index;
+//} camera_gvar; 
+//
+//#define PAGE_WECHAT 1
+//
+//static uint8_t s_key2_recording = 0;
+//
+//uint32_t intercom_push_key2(struct key_callback_list_s *callback_list,
+//                            uint32_t keyvalue,
+//                            uint32_t extern_value)
+//{
+//    // 打一条总入口日志
+//    os_printf("[PTT] key2_cb in: key=0x%08X, page_cur=%d, focus=%d, video_mode=%d\n",
+//              keyvalue, camera_gvar.page_cur, s_wechat_focus_idx, g_video_intercom_mode);
+//
+//    /* 1) 视频对讲模式下，实体语音键无效 */
+//    if (g_video_intercom_mode) {
+//        os_printf("[PTT] ignore: in video_intercom_mode=%d\n", g_video_intercom_mode);
+//        return 0;
+//    }
+//
+//    /* 2) 只在微聊页面生效 */
+//    if (camera_gvar.page_cur != PAGE_WECHAT) {
+//        os_printf("[PTT] ignore: not in PAGE_WECHAT (cur=%d)\n", camera_gvar.page_cur);
+//        return 0;
+//    }
+//
+//    /* 3) 只在底部“语音”按钮被选中时生效（focus_idx = 1） */
+//    if (s_wechat_focus_idx != 1) {
+//        os_printf("[PTT] ignore: focus_idx=%d (not voice btn)\n", s_wechat_focus_idx);
+//        return 0;
+//    }
+//
+//    /* 4) 只响应该物理键位：KEY_CALL */
+//    if ((keyvalue >> 8) != KEY_CALL) {
+//        os_printf("[PTT] ignore: not KEY_CALL, key=0x%08X\n", keyvalue);
+//        return 0;
+//    }
+//
+//    uint32 key_val = (keyvalue & 0xff);
+//    os_printf("[PTT] KEY_CALL event = 0x%02X\n", key_val);
+//
+//    /* 5) 长按开始说话：KEY_EVENT_LDOWN */
+//    if (key_val == KEY_EVENT_LDOWN) {
+//
+//        if (!s_key2_recording) {
+//            s_key2_recording = 1;
+//			
+//			pcm_record_start();
+//
+//            // 硬件音频路径切换：关喇叭，停播放，开 MIC
+//            mute_speaker(1);                       // 喇叭关闭
+//            audio_dac_set_filter_type(SOUND_NONE); // DAC 不再播放对讲通路
+//
+//            audio_adc_unmute();                    // 麦克风打开
+//
+//            printf("[wechat] record start\r\n");
+//
+//            // 开始本地 WAV 录音（写 SD 卡）
+////            if (key_wav_record_start(SAMPLERATE, "wct", 0) != 0) {
+////                printf("[wechat] key_wav_record_start fail\n");
+////                // 失败的话：可以根据需求决定是否继续仅发送对讲，不录文件
+////            }
+//
+//
+//
+//        }
+//    }
+//    /* 6) 松开结束说话：KEY_EVENT_LUP */
+//    else if (key_val == KEY_EVENT_LUP) {
+//
+//        if (s_key2_recording) {
+//            s_key2_recording = 0;
+//
+//            // 停止 WAV 录音
+////            key_wav_record_stop();
+//			pcm_record_stop();
+//			wechat_save_record_buf_to_wav("wct", SAMPLERATE);
+//			wechat_send_record_buf_as_voice_msg(SAMPLERATE);
+//            // 音频路径复原：关 MIC、开喇叭、回到对讲播放滤波
+//            audio_adc_mute();                         // 麦克风关闭
+//            mute_speaker(0);                          // 喇叭打开
+//            audio_dac_set_filter_type(SOUND_INTERCOM);// 继续用对讲滤波播放
+//
+//            printf("[wechat] record stop\n");
+//        }
+//    }
+//
+//    return 0;
+//}
 
-extern uint8_t s_wechat_focus_idx;  
-extern struct {
-    uint8_t page_cur;
-    uint8_t page_back;
-    uint8_t pagebtn_index;
-} camera_gvar; 
-
-#define PAGE_WECHAT 1
-
-#define PCM_SAMPLE_LEN        160          // 每帧samples（8kHz 20ms）
-#define PCM_MAX_SEC           60
-#define PCM_FRAME_PER_SEC     50           // 20ms一帧
-
-#define PCM_MAX_FRAMES        (PCM_MAX_SEC * PCM_FRAME_PER_SEC) // 3000帧
-extern int16_t g_pcm_record_buf[PCM_MAX_FRAMES][DECODED_DATA_LEN];
-extern uint32_t g_pcm_wr_index;
-static uint8_t s_key2_recording = 0;
-
-void pcm_record_dump(void)
-{
-    uint32_t frames = pcm_record_get_frames();
-
-    printf("Recorded frames = %u\n", frames);
-
-    for (uint32_t i = 0; i < frames; i++) {
-//        printf("[Frame %u]: ", i);
-
-        for (uint32_t j = 0; j < PCM_SAMPLE_LEN; j++) {
-            printf("%d ", g_pcm_record_buf[i][j]);
-        }
-//		printf("\n");
-
-    }        
-	printf("\n");
-}
-
-uint32_t intercom_push_key2(struct key_callback_list_s *callback_list,uint32_t keyvalue,uint32_t extern_value)
-{    
-
-    // 1) 视频对讲模式下忽略实体语音键
-    if (g_video_intercom_mode) {
-        return 0;
-    }
-    // 2) 只在微聊页面生效
-    if (camera_gvar.page_cur != PAGE_WECHAT) {
-        return 0;
-    }
-
-    // 3) 只在“语音”那个底部按钮被选中时生效
-    if (s_wechat_focus_idx != 1) {
-        return 0;
-    }
-	if( (keyvalue>>8) != KEY_CALL)
-		return 0;
-	uint32 key_val = (keyvalue & 0xff);
-	if(key_val == KEY_EVENT_LDOWN) {
-		if (!s_key2_recording) {
-            s_key2_recording = 1;
-
-			mute_speaker(1);//喇叭关闭
-			audio_dac_set_filter_type(SOUND_NONE);//DAC 输出滤波类型设成"无/关闭"，等于把播放通道停掉。
-
-			audio_adc_unmute();//麦克风打开
-			printf("1_cur[wechat] record start\n");
-			
-			if (key_wav_record_start(SAMPLERATE, "wct", 0) != 0) {
-                printf("[wechat] key_wav_record_start fail\n");
-                // 失败的话，你可以选择直接不中断内存录音
-            }
-			
-			pcm_record_start();   // 内存存储录音
-
-		}
-	}
-	else if(key_val == KEY_EVENT_LUP) {
-		if (s_key2_recording) {
-            s_key2_recording = 0;
-
-			pcm_record_stop();   // 停止内存存储
-
-			uint32_t frames  = g_pcm_wr_index;           // 或者 pcm_record_get_frames()
-            uint32_t samples = frames * DECODED_DATA_LEN;
-
-            printf("[wechat] record stop, frames=%u, samples=%u\n",
-                   frames, samples);
-
-            /* 3. 写入 SD 卡 WAV 文件 */
-            if (samples > 0) {
-                int ret = wechat_save_pcm_to_wav("wct",
-                                                 SAMPLERATE,
-                                                 &g_pcm_record_buf[0][0],
-                                                 samples);
-                if (ret != 0) {
-                    printf("[wechat] save wav fail: %d\n", ret);
-                }
-            } else {
-                printf("[wechat] no samples, skip save\n");
-            }
-
-//			key_wav_record_stop();
-			
-			
-			audio_adc_mute();//麦克风关闭
-			mute_speaker(0);//喇叭打开
-			audio_dac_set_filter_type(SOUND_INTERCOM);//切到对讲专用的 DAC 滤波模式，适合人声播放
-
-//			pcm_record_dump();
-		}
-	}
-	return 0;
-}
 
 
 int intercom_server_init(void)
@@ -379,7 +397,7 @@ int intercom_server_init(void)
 #if DUPLEX_TYPE == HALF_DUPLEX
 	add_keycallback(intercom_push_key,NULL);
 #endif
-	add_keycallback(intercom_push_key2,NULL);
+//	add_keycallback(intercom_push_key2,NULL);
 	if((intercom->udp_sfd==-1) || (intercom->ack_sfd==-1)) {
 		os_printf("\nerr:%s %d",__FUNCTION__,__LINE__);
 		goto intercom_server_init_err;
@@ -423,7 +441,7 @@ int intercom_client_init(void)
 		goto intercom_client_init_err;
 	}
 // #endif
-	add_keycallback(intercom_push_key2,NULL);
+//	add_keycallback(intercom_push_key2,NULL);
 
     OS_TASK_INIT("intercom_client_handle", &intercom_client_handle_task, intercom_client_handle,  NULL, OS_TASK_PRIORITY_NORMAL, 1024);
 	return 0;
@@ -1353,6 +1371,7 @@ void intercom_send(uint8 num)
 	}
 
 }
+
 //从 UDP 收包 → 校验 → 切成 sublist/audio_node → 进入“待播放队列”
 void intercom_recv(void *d)
 {
@@ -1553,11 +1572,16 @@ void intercom_encoded_handle(void *d)
 	struct os_semaphore *sem = (struct os_semaphore *)d;
 	int ret = -1;
 	static uint32_t dbg_frame_cnt = 0;
+	
+	static uint8_t last_encode_flag   = 0xFF;
+    static uint8_t last_transfer_mode = 0xFF;
+    static uint8_t last_send_flag     = 0xFF;
+	
 	//生成随机 intercom ID
 	g_s_identify_num = 0;
 	os_random_bytes((uint8*)(&g_s_identify_num), 4);
 	os_printf("\n**********intercom ID:%d***********\n",g_s_identify_num);
-	
+
 	while(1)
 	{
 		os_sema_down(sem,-1);  //等待编码信号量，等待唤醒
@@ -1565,6 +1589,27 @@ void intercom_encoded_handle(void *d)
 		current_adc_data = get_f;
 		ret = os_mutex_lock(&send_mutex,-1);
 		if(ret == 0){
+			
+		#if INTERCOM_ENC_DEBUG
+            /* 打印关键状态变化：编码标志 / 收发模式 / send_start_flag */
+            if (last_encode_flag   != intercom_encode_flag ||
+                last_transfer_mode != g_transfer_mode      ||
+                last_send_flag     != send_start_flag) {
+
+                INTERCOM_ENC_LOG("[STATE] enc_flag:0x%02x->0x%02x, mode:%d->%d, send_flag:%u->%u, cached=%d",
+                                 last_encode_flag,   intercom_encode_flag,
+                                 last_transfer_mode, g_transfer_mode,
+                                 last_send_flag,     send_start_flag,
+                                 get_ringbuf_manage_count());
+                last_encode_flag   = intercom_encode_flag;
+                last_transfer_mode = g_transfer_mode;
+                last_send_flag     = send_start_flag;
+            }
+
+            /* 每次被唤醒时简单打印一下有没有拿到 PCM */
+            INTERCOM_ENC_LOG("[WAKE] sem down, get_f=%p, mode=%d, enc_flag=0x%02x, send_flag=%u",
+                             get_f, g_transfer_mode, intercom_encode_flag, send_start_flag);
+		#endif
 		#if DUPLEX_TYPE == HALF_DUPLEX
 			if(g_transfer_mode == SEND_MODE) 
 			{	
@@ -1576,9 +1621,14 @@ void intercom_encoded_handle(void *d)
 					{
 				#elif DUPLEX_TYPE == FULL_DUPLEX
 					//不做编码(发空头包/保持链路)
-					if(intercom_encode_flag!=0x03) //编码标志位为 0x03 表示编码被禁止（缓存太多或者编码被关闭）
+					if(intercom_encode_flag!=0x03) //标志位不为 0x03 表示编码被禁止（缓存太多或者编码被关闭）
 					{
 				#endif
+					#if INTERCOM_ENC_DEBUG
+				        /* 这里属于“有 PCM 帧但当前不允许编码”，只发心跳 */
+						INTERCOM_ENC_LOG("skip encode, send keepalive (flag=0x%x, cached=%d)",
+										 intercom_encode_flag, get_ringbuf_manage_count());
+					#endif	
 						//丢掉获取的PCM	
 						free_data(get_f);
 						current_adc_data = NULL;
@@ -1626,25 +1676,19 @@ void intercom_encoded_handle(void *d)
 					g_switch_recv_success = 0;
 
 					mute_sta = 0;
-					recv_stream_buf = get_stream_real_data(get_f); //获取 PCM 音频数据指针(采集的真实的语音数据)
-					
-					/* ====================== 新增：整帧 PCM 打印 ====================== */
-
-                    recv_stream_buf = get_stream_real_data(get_f); //获取 PCM 音频数据指针
-                    dbg_frame_cnt++;
-
-                    os_printf("[INTERCOM ENC] frame %lu, PCM 160 samples:\n",
-                              (unsigned long)dbg_frame_cnt);
-
-                    for (int i = 0; i < DECODED_DATA_LEN; i++) {   // DECODED_DATA_LEN = 160
-                        os_printf("%d ", recv_stream_buf[i]);
-                    }
-                    os_printf("\n");
-
-                    /* ====================== 打印结束 ====================== */
-					
-					
+					recv_stream_buf = get_stream_real_data(get_f); //获取 PCM 音频数据指针(采集的真实的语音数据)					
 					timestamp = os_jiffies();
+				#if INTERCOM_ENC_DEBUG
+					dbg_frame_cnt++;
+					if ((dbg_frame_cnt % 50) == 0) {
+						INTERCOM_ENC_LOG("encode frame #%u: seq=%u sort=%u ts=%u cached=%d",
+										 dbg_frame_cnt,
+										 (unsigned)g_send_sequence,
+										 (unsigned)sort,
+										 (unsigned)timestamp,
+										 get_ringbuf_manage_count());
+					}
+				#endif	
 					//进行 ADPCM 编码，把 recv_stream_buf 这 DECODED_DATA_LEN 个样本编码到 encoded_buf+RESERVE 开始的位置。code_len 是输出字节数
 					adpcm_encode(Enc_Inst,encoded_buf+RESERVE,&code_len,recv_stream_buf,DECODED_DATA_LEN,CODE_BPS);
 					free_data(get_f);//释放 PCM 音频帧

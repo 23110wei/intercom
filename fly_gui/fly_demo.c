@@ -458,8 +458,7 @@ void event_handler(lv_event_t * e)
 	if((code == LV_EVENT_CLICKED) ||(code==USER_KEY_EVENT))
 	{
 		LV_LOG_USER("Clicked");
-
-		printf(" # Clicked camera_gvar.page_cur=%d ,event_handler=%d USER_KEY_EVENT=%d  \n",camera_gvar.page_cur,code,USER_KEY_EVENT);
+//		printf(" # Clicked camera_gvar.page_cur=%d ,event_handler=%d USER_KEY_EVENT=%d  \n",camera_gvar.page_cur,code,USER_KEY_EVENT);
 		
 		if(camera_gvar.page_cur == PAGE_HOME){
 			ui_event_homePage(e);
